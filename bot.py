@@ -30,7 +30,6 @@ ZODIAC_SIGNS = {
 # Хранилище пользователей: {user_id: zodiac}
 users = {}
 
-
 # === ФУНКЦИЯ: запрос к YandexGPT ===
 async def get_horoscope_from_ai(zodiac_sign):
     prompt = f"""
@@ -113,6 +112,7 @@ async def set_zodiac(message: types.Message):
     user_id = message.from_user.id
     zodiac = message.text
     users[user_id] = zodiac
+    save_users() # сохранение пользователей
 
     # Запускаем фоновую задачу
     asyncio.create_task(daily_horoscope_loop(user_id, zodiac))
@@ -130,14 +130,102 @@ async def start(message: types.Message):
     kb = [[types.KeyboardButton(text=sign)] for sign in ZODIAC_SIGNS.keys()]
     keyboard = types.ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True, one_time_keyboard=True)
     await message.answer(
-        "🌟 Привет! Я — @CosmoBot\n"
+        "🌟 Привет! Я — @KosmoSovetBot\n"
         "Выбери свой знак зодиака — и получай **смешной гороскоп от ИИ каждое утро** 🌅",
         reply_markup=keyboard
     )
 
 
+# === /stop ===
+@dp.message(F.text == "/stop")
+async def stop_horoscope(message: types.Message):
+    user_id = message.from_user.id
+    if user_id in users:
+        del users[user_id]
+        save_users()  # сохранение пользователей
+        await message.answer("🛑 Рассылка остановлена. Пришли /start, чтобы возобновить.")
+    else:
+        await message.answer("Ты и так не подписан.")
+
+# === /ask ===
+@dp.message(F.text.startswith("/ask"))
+async def ask_universe(message: types.Message):
+    question = message.text[len("/ask"):].strip()
+    if not question:
+        await message.answer("Напиши вопрос. Например: /ask стоит ли мне сменить работу?")
+        return
+
+    prompt = f"""
+Ты — Вселенная, которая видит всё, но отвечает с иронией и мудростью.
+На вопрос "{question}" ответь в одном предложении, как мем, но с глубоким смыслом.
+Стиль: как у циничного философа из чата.
+Пример: "Ты не опоздал — ты создал напряжение для драматического входа."
+    """.strip()
+
+    async with aiohttp.ClientSession() as session:
+        try:
+            resp = await session.post(
+                "https://llm.api.cloud.yandex.net/foundationModels/v1/completion",
+                headers={
+                    "Authorization": f"Api-Key {YANDEX_API_KEY}",
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "modelUri": f"gpt://{FOLDER_ID}/yandexgpt-lite/latest",
+                    "completionOptions": {
+                        "temperature": 0.6,
+                        "maxTokens": "500"
+                    },
+                    "messages": [{"role": "user", "text": prompt}]
+                }
+            )
+            data = await resp.json()
+
+            if "result" in data:
+                answer = data["result"]["alternatives"][0]["message"]["text"]
+            else:
+                answer = "🌌 Вселенная молчит... Попробуй позже."
+
+        except Exception as e:
+            print(f"❌ Ошибка YandexGPT: {e}")
+            answer = "⚠️ Не удалось связаться с космосом. Попробуй позже."
+
+    # ✅ Отправляем ответ пользователю
+    await message.answer(f"🌌 Вселенная говорит:\n\n> {answer}")
+
+# === /stats ===
+@dp.message(F.text == "/stats")
+async def stats(message: types.Message):
+    id = os.getenv("MY_TG_ID")
+    if message.from_user.id == int(id):  # ← твой ID в TG
+        await message.answer(f"📊 Всего пользователей: {len(users)}")
+
+
+# === СОХРАНЕНИЕ ПОЛЬЗОВАТЕЛЕЙ ===
+import json
+
+USERS_FILE = "users.json"
+users = {}  # {user_id: zodiac}
+
+def save_users():
+    with open(USERS_FILE, "w", encoding="utf-8") as f:
+        json.dump(users, f, ensure_ascii=False, indent=2)
+
+def load_users():
+    global users
+    try:
+        with open(USERS_FILE, "r", encoding="utf-8") as f:
+            users = json.load(f)
+        print(f"✅ Загружено пользователей: {len(users)}")
+    except FileNotFoundError:
+        users = {}
+        print("📁 Файл users.json не найден. Создаётся новая база.")
+
+
+
 # === ЗАПУСК ===
 async def main():
+    load_users()  # ← Загружаем пользователей
     print("🤖 Бот запущен. Ожидаем команды...")
     await dp.start_polling(bot)
 
