@@ -20,6 +20,9 @@ MOSCOW_TZ = pytz.timezone("Europe/Moscow")
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher()
 
+# Храним активные задачи: {user_id: задача}
+active_tasks = {}
+
 # Знаки зодиака
 ZODIAC_SIGNS = {
     "Овен": "♈", "Телец": "♉", "Близнецы": "♊", "Рак": "♋",
@@ -91,19 +94,23 @@ async def send_daily_horoscope(user_id: int, zodiac: str):
 
 # === ФОНОВЫЙ ЦИКЛ РАССЫЛКИ ===
 async def daily_horoscope_loop(user_id: int, zodiac: str):
-    """Фоновая задача: каждый день в 9:00 отправляет гороскоп"""
-    while True:
-        now = datetime.now(MOSCOW_TZ)
-        # Время следующей отправки — 9:00
-        next_run = now.replace(hour=9, minute=0, second=0, microsecond=0)
-        if next_run <= now:
-            next_run += timedelta(days=1)  # Если уже прошло — на завтра
+    try:
+        while True:
+            now = datetime.now(MOSCOW_TZ)
+            next_run = now.replace(hour=9, minute=0, second=0, microsecond=0)
+            if next_run <= now:
+                next_run += timedelta(days=1)
 
-        sleep_seconds = (next_run - now).total_seconds()
-        print(f"⏰ {zodiac} | Следующая рассылка через {sleep_seconds:.0f} секунд (в {next_run.strftime('%H:%M')})")
+            sleep_seconds = (next_run - now).total_seconds()
+            print(f"⏰ {zodiac} | Следующая рассылка через {sleep_seconds:.0f} секунд")
+            await asyncio.sleep(sleep_seconds)
 
-        await asyncio.sleep(sleep_seconds)
-        await send_daily_horoscope(user_id, zodiac)
+            await send_daily_horoscope(user_id, zodiac)
+    except asyncio.CancelledError:
+        print(f"🛑 Задача для пользователя {user_id} отменена")
+        if user_id in active_tasks:
+            del active_tasks[user_id]
+        raise  # Обязательно
 
 
 # === КОГДА ПОЛЬЗОВАТЕЛЬ ВЫБИРАЕТ ЗНАК ===
@@ -112,10 +119,18 @@ async def set_zodiac(message: types.Message):
     user_id = message.from_user.id
     zodiac = message.text
     users[user_id] = zodiac
-    save_users() # сохранение пользователей
 
-    # Запускаем фоновую задачу
-    asyncio.create_task(daily_horoscope_loop(user_id, zodiac))
+    # Сохраняем пользователя
+    save_users()
+
+    # Если у этого пользователя уже есть активная задача — отменяем её
+    if user_id in active_tasks:
+        active_tasks[user_id].cancel()
+        print(f"🔄 Перезапуск задачи для пользователя {user_id}")
+
+    # Запускаем новую задачу и сохраняем её в словарь
+    task = asyncio.create_task(daily_horoscope_loop(user_id, zodiac))
+    active_tasks[user_id] = task
 
     await message.answer(
         f"{ZODIAC_SIGNS[zodiac]} Отлично! Ты — **{zodiac}**.\n\n"
@@ -191,7 +206,7 @@ async def ask_universe(message: types.Message):
             answer = "⚠️ Не удалось связаться с космосом. Попробуй позже."
 
     # ✅ Отправляем ответ пользователю
-    await message.answer(f"🌌 Вселенная говорит:\n\n> {answer}")
+    await message.answer(f"🌌 Вселенная говорит:\n\n {answer}")
 
 # === /stats ===
 @dp.message(F.text == "/stats")
@@ -225,10 +240,16 @@ def load_users():
 
 # === ЗАПУСК ===
 async def main():
-    load_users()  # ← Загружаем пользователей
-    print("🤖 Бот запущен. Ожидаем команды...")
-    await dp.start_polling(bot)
+    load_users()  # Загружаем пользователей
+    print(f"✅ Загружено пользователей: {len(users)}")
 
+    # Перезапускаем задачи для всех
+    for user_id, zodiac in users.items():
+        task = asyncio.create_task(daily_horoscope_loop(user_id, zodiac))
+        active_tasks[user_id] = task
+
+    print("🤖 Бот запущен. Ожидаем новых пользователей...")
+    await dp.start_polling(bot)
 
 if __name__ == '__main__':
     try:
